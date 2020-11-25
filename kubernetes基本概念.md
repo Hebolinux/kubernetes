@@ -1,0 +1,40 @@
+### 服务发现
+
+在kubernetes上，pod具有生命周期，某一pod所在的节点宕机时，此pod会在其他节点上重建，但重建的pod有自己的网络名称空间、UTS等，与原来的pod并不相同，为了使用户能够正确的访问到这些pod的地址，kubernetes提供了一种服务发现机制
+
+在kubernetes上，每新建一个pod，此pod做的第一件事就是先到一个固定位置注册自身的服务，这就是服务发现，重建pod时会先与原有pod在服务发现中注册的信息建立关联关系，用户要访问服务时也不是直接去找pod，而是先到服务发现，然后查找此重建的pod，如果在一定时间内此重建的pod没有与服务发现建立关联关系，则会将此pod提供的服务从服务发现中移除，而用户如果在服务发现中访问不到此pod提供的服务，则会去找一个新的服务提供者
+
+为了尽可能降低用户与pod之间的协调的复杂度，kubernetes为每一组提供同类服务的pod与其客户端之间提供一个中间层service，service只要不删除，那它的名称和地址就是固定的，当客户端需要写在配置文件中访问某个服务时，只需要在配置文件中写入service的地址或名称即可，而service不但能提供一个稳定的访问入口，还是一个调度器，service收到客户端的请求后将其代理到后端的pod上
+
+service则是通过label selector关联pod对象的，关联pod对象后再通过动态检测发现pod的IP和端口，作为自己可以调度的后端服务对象
+
+#### AddOns（附件）
+
+再kubernetes上，service只是iptables一个DNAT规则，而service的IP也仅存在于DNAT规则中，不配置在任何一个网卡上，所以service的IP是ping不通的，因为没有TCP/IP协议栈，但却可以正常请求作服务端。在kubernetes中，service并不只有一个，以LNMP为例来说，nginx的Pod可能有多个，用户访问nginx的Pod时需要通过与其关联的servcie，而nginx访问后端的mysql时，也必须通过与mysql相关联的service
+
+service作为kubernetes的一个对象来说，service有自己的名称，且service的名称也相当于一个服务的名称，可以把service名称解析为一个IP，而名称解析则需要通过DNS实现，所以kubernetes部署完成第一件事就需要在kubernetes上部署一个DNS的pod，以确保各service名称能被解析，这种pod属于kubernetes自身的服务就需要用到的pod，属于基础性系统架构型的pod，也被称为附件，它并不作为程序本身的一部分存在
+
+### Kubernetes的网络模型
+
+kubernetes要求整个集群有3种网络：节点网络 ---代理--> 集群网络 ---代理--> Pod网络
+
+1. Pod网络：各Pod运行在同一网络中
+2. 集群网络：service运行在一个网络，与Pod的网络分离，Pod内部的网络名称空间可以ping通，但service不行
+3. 节点网络：各节点处于一个网络
+
+kubernetes集群内有3种通信：
+
+1. Pod：同一Pod内的多个容器间通过loop环回接口通信
+2. 各个Pod之间的通信：在kubernetes集群中即便是不同节点上的Pod，也是可以直接使用Pod的地址进行通信的，所以处于同一网段中的Pod不允许地址冲突
+3. Pod与Service之间的通信：每一台主机上都有iptables规则，只要创建一个service，此service是需要反映在整个集群中的每一个节点上的，那么每一个nodes上都应该有相应的iptables规则修改，而与Service之间的通信，只需要容器报文的目标地址指向网关，如docker 0桥，而docker 0桥要访问service地址则需要查询iptables规则表
+
+#### kube-proxy
+
+Service随时也有可能会变动，比如删除Service、创建Service或Service后的Pod改变，如果Service后的Pod改变了，那么Service规则中的DIP也需要改变，而Service如何检测Pod是否发生改变，则是需要用到Label Selector
+
+Service如何改变所有节点上相关的地址规则，则需要kube-proxy来实现，kube-proxy随时与API Server进行通信，因为每一个Pod发生改变之后，这个结果都需要保存到API Server中，API Server通信发生改变后会生成一个通知事件，此事件可以被每一个关联的组件接收到，比如kube-proxy，一旦发现某一Service后的Pod发生了改变、地址发生了改变，那么对应的由kube-proxy在本地将改变的IP地址反映到iptables或ipvs规则中，Service管理需要通过kube-proxy实现
+
+### Etcd
+
+kubernetes集群中基本上所有的操作都要通过API Server进行通信，整个集群中的各个对象的状态信息也都要流到API Server，而为了存储各个对象的状态信息则需要用到
+
